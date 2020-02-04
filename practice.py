@@ -1,12 +1,10 @@
-from sklearn.datasets import load_digits, fetch_openml
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, RandomForestRegressor
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from sklearn.feature_selection import SelectKBest, chi2
+from sklearn.ensemble import StackingClassifier
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import Ridge, LogisticRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import OneHotEncoder, LabelEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline, make_pipeline
 import pandas as pd
@@ -24,6 +22,16 @@ np.set_printoptions(threshold=sys.maxsize)
 # import data
 data = pd.read_csv('dataset/train.csv')
 data = data.set_index('PassengerId')
+
+# submission data
+sub = pd.read_csv('dataset/test.csv')
+sub = sub.set_index('PassengerId')
+sub.insert(0, 'Survived', 2)
+
+
+
+# Adding train and test for preprocessing
+data = data.append(sub)
 
 
 # Splitting name
@@ -43,38 +51,38 @@ data['Age'] = data.groupby(['Sex', 'Pclass'])['Age'].transform(lambda x: x.filln
 data['Embarked'] = data['Embarked'].fillna('Unkwnown')
 
 
-# cleaning
-#data['lname'] = 'bnn'
-
-
 # Ticket
 data['TicketNumber'] = data['TicketNumber'].fillna(data['TicketPrefix'])
 data['TicketPrefix'] = np.where(data['TicketPrefix'] == data['TicketNumber'], '', data['TicketPrefix'])
 
 
-#print(type(data['Cabin'][2]))
-#print(data.isnull().sum())
-
 # Removing Unused Columns
 data = data.drop(columns=['Name', 'Othernames', 'othernames', 'Cabin', 'lname', 'Othername', 'Ticket', 'TicketPrefix'])
 
+
+submission = data.iloc[891:, :]
+data = data.iloc[:891, :]
+
 features = data.drop(columns=['Survived'])
+submission = submission.drop(columns=['Survived'])
 target = data.Survived.values
 
 
-X_train, X_test, y_train, y_test = train_test_split(features, target, test_size = 0.30, random_state=0)
+X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.30, random_state=0)
 
 numeric_features = ['Fare', 'SibSp', 'Parch', 'Age']
 numeric_transformer = Pipeline(steps=[
     ('imputer', SimpleImputer(strategy='median')),
     ('scaler', StandardScaler())])
 
-categorical_features = ['Sex' ,'TicketNumber', 'title', 'Pclass', 'Alias',  'Embarked']
+
+categorical_features = ['Sex', 'TicketNumber', 'title', 'Pclass', 'Alias',  'Embarked']
 categorical_transformer = Pipeline(steps=[
     ('imputer', SimpleImputer(strategy='constant', fill_value='unknown')),
     ('onehot', OneHotEncoder(handle_unknown='ignore'))])
 
 
+# didn't use
 str_transformer = Pipeline(steps=[
     ('TFIDF', TfidfVectorizer(stop_words=None, lowercase=True, strip_accents=None,
                                 decode_error='replace',
@@ -87,54 +95,40 @@ str_transformer = Pipeline(steps=[
 preprocess = ColumnTransformer([
         ('num', numeric_transformer, numeric_features),
         ('cat', categorical_transformer, categorical_features),
-        #('Othername', str_transformer, 'Othername'),
-        #('lname', str_transformer, 'lname')
          ], remainder='passthrough')
 
 
-model = make_pipeline(
-    preprocess,
-    SVC())
-
-cvb = cross_val_score(model, X_train, y_train, scoring='accuracy', cv = 10)
-
-print(cvb.mean(),cvb.std()*2)
-#print("model score: %.3f" % model.score(X_train, y_train))
-
-# SVC
-# LogisticRegression()
-# RandomForestClassifier
-# ExtraTreesClassifier
-
-#model.fit(X_train, y_train)
+# build composite model
+estimators = [
+    ('SVM', SVC()),
+    ('lr', LogisticRegression())
+]
+stacking_classifier = StackingClassifier(estimators=estimators, final_estimator=LogisticRegression())
+model = make_pipeline(preprocess, stacking_classifier)
+model.fit(X_train, y_train)
 
 
-#y_train_pred = model.predict(X_train)
-#y_pred = model.predict(X_test)
+cvb = cross_val_score(model, X_train, y_train, scoring='accuracy', cv=10)
+print(cvb.mean(), cvb.std()*2)
 
-x = features
-
-for column in x.columns:
-    if x[column].dtype == type(object):
-        le = LabelEncoder()
-        x[column] = le.fit_transform(x[column])
-
-#print(x.head(3))
-
-#rf = RandomForestClassifier(n_estimators=100, oob_score=True, random_state=12, max_depth=3, n_jobs=-1)
-#rf.fit(features, target)
-#print(1-rf.oob_score_)
-
-#importance = rf.feature_importances_
-#print(importance)
+print("model score: %.3f" % model.score(X_train, y_train))
+y_train_pred = model.predict(X_train)
+y_pred = model.predict(X_test)
+train_rmse = np.sqrt(mean_squared_error(y_train_pred, y_train))
 
 
+test_rmse = np.sqrt(mean_squared_error(y_pred, y_test))
+print("model score: %.3f" % model.score(X_test, y_test))
 
-#train_rmse = np.sqrt(mean_squared_error(y_train_pred, y_train))
-#test_rmse = np.sqrt(mean_squared_error(y_pred, y_test))
-#print('Train RMSE: %.4f' % train_rmse)
-#print('Test RMSE: %.4f' % test_rmse)
-#print("model score: %.3f" % model.score(X_test, y_test))
-#print("model score: %.3f" % model.score(X_train, y_train))
-#print (model[1].feature_importances_)
 
+y_sub= model.predict(submission)
+
+
+submission = pd.DataFrame({'PassengerId':submission.index,'Survived':y_sub})
+
+#print(submission)
+
+#filename = 'Predictions.csv'
+#submission.to_csv(filename,index=False)
+
+#print('Saved file: ' + filename)
